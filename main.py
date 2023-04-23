@@ -52,10 +52,11 @@ def compute_id(df: pd.DataFrame, column_param: dict, column_name: str) -> pd.Ser
     if not isinstance(length, int):
         try:
             length  =  str(length)
+        except Exception:
             raise Exception("length must be an integer")
     #could use pystr_format() instead
     def gen_id(row) -> str:
-        return "C0" + str(fake.pyint(1, 10**(length - 2) -1 ).rjust(length - 2, "0") if fake.pybool() else str(fake.pyint(1, 10**(length) - 1 ))
+        return "C0" + str(fake.pyint(1, 10**(length - 2) -1 )).rjust(length - 2, "0") if fake.pybool() else str(fake.pyint(1, 10**(length) - 1 ))
     return df['__index'].apply(gen_id)
 
 def get_dependency(df: pd.DataFrame, dependency: str) -> pd.Series:
@@ -64,9 +65,6 @@ def get_dependency(df: pd.DataFrame, dependency: str) -> pd.Series:
         return df[column_name]
     else: 
         raise NotImplementedError("dependency not implemented")
-
-
-        
 
 def gen_ts_from_series(dependency: pd.Series, 
                        is_positive: bool = True, 
