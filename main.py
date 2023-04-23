@@ -123,7 +123,7 @@ def compute_ts(df: pd.DataFrame, column_param: dict, column_name: str) -> pd.Ser
     min_date = datetime(2010,1,1)
     max_date = datetime.now()
     if 'min-date' not in column_param:
-        raise Exception("missing mandatory key: min-date for id generation method of column : " + column_name)
+        raise Exception("missing mandatory key: min-date for random-timeserie generation method of column : " + column_name)
     if "dependency" in column_param:
         dependency_column = get_dependency(df, column_param["dependency"])
         max_date = get_date_from_params("max-date", column_param)
@@ -147,13 +147,58 @@ def compute_hash(df: pd.DataFrame) -> pd.Series:
     return column
 
 def get_masked_random_list(df, column_param: dict, column_name: str, masks_dict: list[pd.Series]):
-    column = None
+    if 'masks' not in column_param:
+        raise Exception("missing mandatory key: masks for masked_random_list generation method of column : " + column_name)
+    if len(masks_dict) == 0:
+        raise Exception("masks_dict is empty")
+    
+    column = np.empty(masks_dict[0].shape)
+    else_params= None
+    else_mask = []
+    for mask_name, mask_params in column_param['masks'].items():
+        if mask_name == "else": 
+            else_params = mask_params
+            continue
+        else:
+            else_mask.push(mask_name)
+            # get the mask from the masks_dict
+            if mask_name not in masks_dict:
+                raise Exception("mask not found in masks_dict")
+            np_mask = masks_dict[mask_name]
+            weights = None
+            values = None
+            mask_size = np.count_nonzero(masks_dict[mask_name])
+            if isinstance(mask_params['values'], dict):
+                weights = mask_params['values'].values().tolist()
+                values = mask_params['values'].keys().tolist()
+            if isinstance(mask_params['values'], str):
+                values = [mask_params['values']]
+            if isinstance(mask_params['values'], int):
+                values = [str(mask_params['values'])]
+            column = np.where(np_mask, np.random.choice(values, mask_size, p=weights), column)
+
+
+    if len(else_mask) > 1:
+        #compute else mask based on others
+        np_mask = masks_dict[mask_name]
+        column = np.empty(np_mask.shape)
+        weights = None
+        values = None
+        if isinstance(else_params, dict):
+            weights = else_params.values().tolist()
+            values = else_params.keys().tolist()
+        if isinstance(else_params, str):
+            values = [else_params]
+        if isinstance(else_params, int):
+            values = [str(else_params)]
+            #TODO
+        column = np.where(np_mask, np.random.choice(values, mask_size, p=weights), column)
     return column
 
 def get_random_list(df, column_param: dict, column_name: str):
     column = None
     if 'values' not in column_param:
-        raise Exception("missing mandatory key: values for id generation method of column : " + column_name)
+        raise Exception("missing mandatory key: values for random_list generation method of column : " + column_name)
     return column
 
 def compute_column(df: pd.DataFrame, column_param: dict, column_name: str, masks_dict: list[pd.Series]) -> pd.Series:
