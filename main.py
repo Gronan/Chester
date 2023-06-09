@@ -1,3 +1,20 @@
+# 
+# This file is part of the Gronan/Chester distribution (https://github.com/Gronan/Chester).
+# Copyright (c) 2023 Ronan TREILLET.
+# 
+# This program is free software: you can redistribute it and/or modify  
+# it under the terms of the GNU General Public License as published by  
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but 
+# WITHOUT ANY WARRANTY; without even the implied warranty of 
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU 
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License 
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+
 from datetime import datetime, timedelta
 import os
 import sys
@@ -9,7 +26,7 @@ from mask import mask_factory_build
 from io import StringIO
 from faker import Faker
 
-OUTPUT_BUCKET_NAME = 'my_bucket_name'
+OUTPUT_BUCKET_NAME = 'rt-bmw-chester-data'
 SEED = 125345
 fake = Faker(['fr_FR'])
 # Set the seed value of the shared `random.Random` object
@@ -51,7 +68,7 @@ def compute_id(df: pd.DataFrame, column_param: dict, column_name: str) -> pd.Ser
     length = column_param['length']
     if not isinstance(length, int):
         try:
-            length  =  str(length)
+            length  =  int(length)
         except Exception:
             raise Exception("length must be an integer")
     #could use pystr_format() instead
@@ -146,59 +163,68 @@ def compute_hash(df: pd.DataFrame) -> pd.Series:
     column =  df['__index'].apply(gen_hash)
     return column
 
+def extract_random_list_params(params):
+    weights = None
+    values = None
+    if isinstance(params, list):
+        values = params
+    if isinstance(params, dict):
+        weights = list(params.values())
+        values = list(params.keys())
+    if isinstance(params, str):
+        values = [params]
+    if isinstance(params, int):
+        values = [str(params)]
+    return values, weights
+
 def get_masked_random_list(df, column_param: dict, column_name: str, masks_dict: list[pd.Series]):
     if 'masks' not in column_param:
         raise Exception("missing mandatory key: masks for masked_random_list generation method of column : " + column_name)
     if len(masks_dict) == 0:
         raise Exception("masks_dict is empty")
     
-    column = np.empty(masks_dict[0].shape)
+    column = None
+    
     else_params= None
     else_mask = []
+    has_else = False
     for mask_name, mask_params in column_param['masks'].items():
+        # init column with the first mask avalaible
+        if column is None and mask_name != "else":
+            column = np.empty(masks_dict[mask_name].shape)
+            column[:] = np.nan
+    
         if mask_name == "else": 
+            has_else = True
             else_params = mask_params
             continue
         else:
-            else_mask.push(mask_name)
             # get the mask from the masks_dict
             if mask_name not in masks_dict:
                 raise Exception("mask not found in masks_dict")
             np_mask = masks_dict[mask_name]
-            weights = None
-            values = None
-            mask_size = np.count_nonzero(masks_dict[mask_name])
-            if isinstance(mask_params['values'], dict):
-                weights = mask_params['values'].values().tolist()
-                values = mask_params['values'].keys().tolist()
-            if isinstance(mask_params['values'], str):
-                values = [mask_params['values']]
-            if isinstance(mask_params['values'], int):
-                values = [str(mask_params['values'])]
-            column = np.where(np_mask, np.random.choice(values, mask_size, p=weights), column)
+            #append the mask to the list because if there is an else mask we need to compute it based on the others
+            else_mask.append(np_mask)
+            values, weights = extract_random_list_params(mask_params['values'])
+            #suboptimal because we use a distribution of the size of the length in parameters.json when we could just create a distribution of the size of the mask
+            column = np.where(np_mask, np.random.choice(values, column.size, p=weights), column)
 
 
-    if len(else_mask) > 1:
+    if has_else and len(else_mask) > 0:
         #compute else mask based on others
-        np_mask = masks_dict[mask_name]
-        column = np.empty(np_mask.shape)
-        weights = None
-        values = None
-        if isinstance(else_params, dict):
-            weights = else_params.values().tolist()
-            values = else_params.keys().tolist()
-        if isinstance(else_params, str):
-            values = [else_params]
-        if isinstance(else_params, int):
-            values = [str(else_params)]
-            #TODO
-        column = np.where(np_mask, np.random.choice(values, mask_size, p=weights), column)
+        values, weights = extract_random_list_params(else_params['values'])
+        #get the opposite mask of the others masks 
+        rest_mask = ~np.any(else_mask, axis=0)
+        #suboptimal because we use a distribution of the size of the length in parameters.json when we could just create a distribution of the size of the mask
+        column = np.where(rest_mask, np.random.choice(values, column.size, p=weights), column)
     return column
 
 def get_random_list(df, column_param: dict, column_name: str):
     column = None
     if 'values' not in column_param:
         raise Exception("missing mandatory key: values for random_list generation method of column : " + column_name)
+    values, weights = extract_random_list_params(column_param['values'])
+    column = np.random.choice(values, df.shape[0], p=weights)
     return column
 
 def compute_column(df: pd.DataFrame, column_param: dict, column_name: str, masks_dict: list[pd.Series]) -> pd.Series:
@@ -238,8 +264,8 @@ def generate_df(table_parameters: dict) -> pd.DataFrame:
     df = init_df(table_parameters)
     masks_dict = generate_masks(table_parameters, len(df))
     df = generate_columns(df, table_parameters, masks_dict)
-    
-    return df.drop(columns=['__index'], inplace=True)
+    df.drop(columns=['__index'], inplace=True)
+    return df
 
 def upload_to_s3(df: pd.DataFrame, table_name: str) -> None:
     #upload the dataframe to s3 bucket
