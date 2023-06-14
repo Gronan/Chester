@@ -22,7 +22,8 @@ import pandas as pd
 import numpy as np
 import json
 import boto3
-from mask import mask_factory_build
+from mask import mask_factory_build, MissingMaskLengthPropertyException, MaskGroup, MissingMaskTypePropertyException, \
+    MissingMaskChildrenPropertyException, mask_gen_factory
 from io import StringIO
 from faker import Faker
 
@@ -34,6 +35,11 @@ fake = Faker(['fr_FR'])
 Faker.seed(SEED)
 
 
+class PropertyException(Exception):
+    def __init__(self):
+        super().__init__('MaskGroupShouldHaveChildrenException')
+
+
 # function that read the file parameters.json and return the parameters as a dictionary
 def read_parameters() -> dict:
     with open(os.path.join(sys.path[0], 'parameters.json')) as f:
@@ -41,16 +47,51 @@ def read_parameters() -> dict:
     return parameters
 
 
-def generate_masks(table_parameters: dict, length: int) -> list[pd.Series]:
+def generate_masks(table_parameters: dict, length: int) -> dict:
     masks_tree = mask_factory_build(table_parameters['masks'])
-    probabilities = masks_tree.get_probability()
-    cartesian_mask = np.random.choice(list(probabilities.keys()), length, p=list(probabilities.values()))
+    try:
+        assert 'gen_method' in table_parameters['gen_method']
+    except AssertionError as e:
+        raise MissingMaskChildrenPropertyException()
+    cartesian_mask = mask_gen_factory(masks_tree, length, table_parameters['gen_method'])
     masks_dict = masks_tree.set_distribution(cartesian_mask)
     return masks_dict
 
 
+def sum_mask_length(mask_list: list) -> int:
+    length = 0
+    try:
+        assert 'children' in mask_list
+    except AssertionError as e:
+        raise MissingMaskChildrenPropertyException()
+    for mask in mask_list['children']:
+        try:
+            try:
+                assert 'type' in mask
+            except AssertionError as e:
+                raise MissingMaskTypePropertyException()
+            if mask['type'] in MaskGroup.types:
+                length = sum_mask_length(mask['children'])
+            else:
+                assert 'length' in mask
+                length += mask['length']
+        except AssertionError as e:
+            raise MissingMaskLengthPropertyException()
+    return length
+
+
+def init_length_df(table_parameters: dict) -> int:
+    length = 0
+    if isinstance(table_parameters['length'], int):
+        length = table_parameters['length']
+    elif isinstance(table_parameters['length'], str):
+        if table_parameters['length'] == "masks_addition" and table_parameters['masks'] is not None:
+            length = sum_mask_length(table_parameters['masks'])
+    return length
+
+
 def init_df(table_parameters: dict) -> pd.DataFrame:
-    length = table_parameters['length']
+    length = init_length_df(table_parameters)
     # we set up a np array of the length provided in the parameters.json
     empty_series = np.zeros(length)
     # we initiate the dataframe with the np array and with a single column (named __index). Column should be removed
@@ -244,20 +285,21 @@ def get_random_list(df, column_param: dict, column_name: str):
 
 
 def compute_column(df: pd.DataFrame, column_param: dict, column_name: str, masks_dict: list[pd.Series]) -> pd.Series:
+    column = None
     try:
         if 'gen-method' not in column_param:
             raise Exception("missing mandatory key")
-        if column_param['gen-method'] == 'constant':
+        if column_param['gen_method'] == 'constant':
             column = compute_constant(df, column_param['parameters'], column_name)
-        if column_param['gen-method'] == 'id':
+        if column_param['gen_method'] == 'id':
             column = compute_id(df, column_param['parameters'], column_name)
-        if column_param['gen-method'] == 'random-timeserie':
+        if column_param['gen_method'] == 'random-timeserie':
             column = compute_ts(df, column_param['parameters'], column_name)
-        if column_param['gen-method'] == 'hash':
+        if column_param['gen_method'] == 'hash':
             column = compute_hash(df)
-        if column_param['gen-method'] == 'masked_random_list':
+        if column_param['gen_method'] == 'masked_random_list':
             column = get_masked_random_list(df, column_param['parameters'], column_name, masks_dict)
-        if column_param['gen-method'] == 'random_list':
+        if column_param['gen_method'] == 'random_list':
             column = get_random_list(df, column_param['parameters'], column_name)
         return column
     except UnboundLocalError as e:
@@ -270,7 +312,7 @@ def compute_column(df: pd.DataFrame, column_param: dict, column_name: str, masks
 # will not break dependency between columns. In order to make this more flexible and decouple order of columns and dependency we should use an Iterator pattern
 # (see https://refactoring.guru/design-patterns/iterator for more information). 
 # Be careful about priority conflict (i think breadth-first traversal is the best way to go)
-def generate_columns(df: pd.DataFrame, table_parameters: dict, masks_dict: list[pd.Series]) -> pd.DataFrame:
+def generate_columns(df: pd.DataFrame, table_parameters: dict, masks_dict: list[pd.Series] | dict) -> pd.DataFrame:
     for column_name, column_param in table_parameters['fields'].items():
         if column_name in df.keys():
             raise Exception("column name already exists in the dataframe")
@@ -279,12 +321,12 @@ def generate_columns(df: pd.DataFrame, table_parameters: dict, masks_dict: list[
 
 
 # function that generate a dataframe based on the parameters
-def generate_df(table_parameters: dict) -> pd.DataFrame:
+def generate_df(table_parameters: dict) -> (pd.DataFrame, dict):
     df = init_df(table_parameters)
     masks_dict = generate_masks(table_parameters, len(df))
     df = generate_columns(df, table_parameters, masks_dict)
     df.drop(columns=['__index'], inplace=True)
-    return df
+    return df, masks_dict
 
 
 def upload_to_s3(df: pd.DataFrame, table_name: str) -> None:
@@ -299,9 +341,12 @@ def upload_to_s3(df: pd.DataFrame, table_name: str) -> None:
 # main function that call the read_parameters function and generate a dataframe based on the parameters
 def main() -> None:
     parameters = read_parameters()
+    masks = {}
+
     # generate a dataframe for each tables in parameters dictionary
     for table_name, table_parameters in parameters["tables"].items():
-        df = generate_df(table_parameters)
+        df, table_mask = generate_df(table_parameters)
+        masks[table_name] = table_mask
         upload_to_s3(df, table_name)
 
 
